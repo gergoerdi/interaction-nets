@@ -10,8 +10,11 @@ import Control.Monad.Trans
 import Control.Monad ((<=<), unless)
 import Data.IntMap.Strict ((!))
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.IntSet as IntSet
 import Data.List
 import Data.Ord
+import Data.Function (fix)
+import Text.Printf
 
 import Debug.Trace
 
@@ -62,6 +65,34 @@ pprNode Node{..} = do
                      , unwords ["P1:", show target1]
                      , unwords ["P2:", show target2]
                      ]
+
+tr :: String -> OptLam s a -> OptLam s a
+tr s act = do
+    ss <- pprState
+    trace (unwords (s:ss)) act
+
+pprState :: OptLam s [String]
+pprState = do
+    last <- lift . readSTRef =<< asks nextAddr
+    mapM (lift . pprN) =<< liveNodes
+  where
+    pprN Node{..} = do
+        (target0, port0) <- readSTRef nodePort0
+        (target1, port1) <- readSTRef nodePort1
+        (target2, port2) <- readSTRef nodePort2
+        return $ printf "%d-%d-|%d|-%d/%d-%d/%d-%d/%d"
+          (toTypeTag nodeType)
+          nodeID
+          nodeTag
+          target0 (fromEnum port0)
+          target1 (fromEnum port1)
+          target2 (fromEnum port2)
+
+    toTypeTag IRot = 0 :: Int
+    toTypeTag ILam = 1
+    toTypeTag IApp = 2
+    toTypeTag IDup = 4
+    toTypeTag IEra = 5
 
 alloc :: OptLam s NodeAddr
 alloc = do
@@ -133,37 +164,35 @@ link a b = do
     uncurry linkHalf a b
     uncurry linkHalf b a
 
-annihiliate :: NodeAddr -> NodeAddr -> OptLam s ()
-annihiliate a b = do
+annihilate :: NodeAddr -> NodeAddr -> OptLam s ()
+annihilate a b = trace (unwords ["annihilate", show a, show b]) $ do
     a1 <- readPort a P1
     b1 <- readPort b P1
+    link a1 b1
     a2 <- readPort a P2
     b2 <- readPort b P2
-    link a1 b1
     link a2 b2
-    free [a, b]
+    free [b, a]
 
 commute :: NodeAddr -> NodeAddr -> OptLam s ()
-commute a b = do
+commute a b = trace (unwords ["commute", show a, show b]) $ do
     a2 <- do
         Node{..} <- readNode a
         mkNode nodeType nodeTag
     b2 <- do
         Node{..} <- readNode b
         mkNode nodeType nodeTag
-    link (a, P0) =<< readPort b P1
-    link (a, P2) (b2, P1)
-    link (a2, P0) =<< readPort b P2
-
     link (b, P0) =<< readPort a P1
+    link (a, P0) =<< readPort b P1
     link (b, P1) (a, P1)
     link (b2, P0) =<< readPort a P2
-
+    link (a2, P0) =<< readPort b P2
+    link (a, P2) (b2, P1)
     link (b, P2) (a2, P1)
     link (b2, P2) (a2, P2)
 
 erase :: NodeAddr -> NodeAddr -> OptLam s ()
-erase a b = do
+erase a b = trace (unwords ["erase", show a, show b]) $ do
     e2 <- mkNode IEra (-1)
     link (a, P0) =<< readPort b P1
     link (e2, P0) =<< readPort b P2
@@ -191,27 +220,75 @@ encodeLam lam = do
             return (app, P2)
         go scope up (Var v) = do
             let lam = scope !! v
-            target <- traceShow ("lam", lam) $ readPort lam P1
-            isERA <- case target of
-                (addr, _) -> (== IEra) . nodeType <$> readNode addr
-            if isERA then do
-                linkHalf lam P1 up
-                return (lam, P1)
-              else do
-                tag <- lift $ readSTRef nextTag
-                lift $ modifySTRef nextTag succ
-                dup <- mkNode IDup tag
-                linkHalf dup P0 (lam, P1)
-                linkHalf dup P1 up
-                link (dup, P2) =<< readPort lam P1
-                linkHalf lam P1 (dup, P0)
-                return (dup, P1)
+            (target, targetPort) <- readPort lam P1
+            targetType <- nodeType <$> readNode target
+            case targetType of
+                IEra -> do
+                    linkHalf lam P1 up
+                    return (lam, P1)
+                _ -> do
+                    tag <- lift $ readSTRef nextTag
+                    lift $ modifySTRef nextTag succ
+                    dup <- mkNode IDup tag
+                    linkHalf dup P0 (lam, P1)
+                    linkHalf dup P1 up
+                    link (dup, P2) =<< readPort lam P1
+                    linkHalf lam P1 (dup, P0)
+                    return (dup, P1)
     enc <- go [] (root, P0) lam
     linkHalf root P0 enc
     return root
 
--- reduceNet :: NodeAddr -> OptLam s NodeAddr
--- reduceNet net =
+reduceNet :: NodeAddr -> OptLam s NodeAddr
+reduceNet net = do
+    -- tr "" $ return ()
+    visit <- lift $ newSTRef [(net, P0)]
+    solid <- lift $ newSTRef mempty
+    exit <- lift $ newSTRef mempty
+
+    let processNode addr port = do
+            -- traceShow ("ProcessNode", addr, port) $ return ()
+            (next, nextPort) <- readPort addr port
+            processNext next nextPort
+        processNext next nextPort = do
+            nextID <- nodeID <$> readNode next
+            (prev, prevPort) <- readPort next nextPort
+            let s = printf "ProcessNext %d %s %d %s:" next (show nextPort) prev (show prevPort) :: String
+            -- trace s $ return ()
+            -- tr s $ return ()
+            nextSolid <- lift $ (nextID `IntSet.member`) <$> readSTRef solid
+            -- traceShow nextSolid $ return ()
+            unless nextSolid $ case nextPort of
+                P0 -> do
+                    prevTag <- nodeTag <$> readNode prev
+                    nextTag <- nodeTag <$> readNode next
+                    if prevPort == P0 && prevTag /= -2 && nextTag /= -2 then do
+                        prevID <- nodeID <$> readNode prev
+                        port <- lift $ (! prevID) <$> readSTRef exit
+                        (exit, exitPort) <- readPort prev port
+                        case nextTag of
+                            -1 -> erase next prev
+                            _ | prevTag == nextTag -> annihilate prev next
+                              | otherwise -> commute prev next
+                        (next, nextPort) <- readPort exit exitPort
+                        processNext next nextPort
+                      else do
+                        lift $ modifySTRef solid $ IntSet.insert nextID
+                        lift $ modifySTRef visit $ \vs -> (next, P1):(next, P2):vs
+                _ -> do
+                    -- traceShow ("exit", nextID, nextPort) $ return ()
+                    lift $ modifySTRef exit $ IntMap.insert nextID nextPort
+                    (next, nextPort) <- readPort next P0
+                    processNext next nextPort
+    fix $ \loop -> do
+        vs <- lift $ readSTRef visit
+        case vs of
+            [] -> return ()
+            (addr, port):vs -> do
+                lift $ writeSTRef visit vs
+                processNode addr port
+                loop
+    tr "done" $ return net
 
 decodeLam :: NodeAddr -> OptLam s Lam
 decodeLam root = do
@@ -239,20 +316,38 @@ decodeLam root = do
 
 runOptLam :: (forall s. OptLam s a) -> a
 runOptLam act = runST $ do
-    heap <- newArray_ (0, 1000) -- TODO
+    heap <- newArray_ (0, 10000) -- TODO
     garbage <- newSTRef []
     nextAddr <- newSTRef 0
     nextID <- newSTRef 1
     runReaderT act R{..}
+
+liveNodes :: OptLam s [Node s]
+liveNodes | False = do
+    seenref <- lift $ newSTRef mempty
+    let go addr = do
+            seen <- lift $ readSTRef seenref
+            if addr `IntSet.member` seen then return []
+              else do
+                lift $ modifySTRef seenref $ IntSet.insert addr
+                node <- readNode addr
+                s0s <- go . fst =<< readPort addr P0
+                s1s <- go . fst =<< readPort addr P1
+                s2s <- go . fst =<< readPort addr P2
+                return $ node : s0s ++ s1s ++ s2s
+    go 0
+          | True= do
+    last <- lift . readSTRef =<< asks nextAddr
+    mapM readNode [0..last-1]
 
 showAll :: NodeAddr -> OptLam s String
 showAll root = do
     seenref <- lift $ newSTRef mempty
     let go addr = do
             seen <- lift $ readSTRef seenref
-            if addr `IntMap.member` seen then return []
+            if addr `IntSet.member` seen then return []
               else do
-                lift $ modifySTRef seenref $ IntMap.insert addr ()
+                lift $ modifySTRef seenref $ IntSet.insert addr
                 node <- readNode addr
                 s <- pprNode node
                 s0s <- go . fst =<< readPort addr P0
@@ -263,20 +358,17 @@ showAll root = do
 
 test = putStrLn $ runOptLam $ do
     node <- encodeLam term
-    s <- pprNode =<< readNode 0
+    node <- reduceNet node
+    -- s <- pprNode =<< readNode 0
     -- return s
     show <$> decodeLam node
     -- showAll node
   where
     -- term = Lam $ Lam $ Var 0
-    term = exp_mod
-    -- term = App id const
-    --   where
-    --     id = Lam $ Var 0
-    --     const = Lam $ Lam $ Var 0
 
-exp_mod = l(l(l(a(a(a(v(0),l(l(a(v(1),l(a(a(v(1),l(l(a(v(1),a(a(v(2),v(1)),v(0)))))),v(0))))))),l(a(v(0),l(l(v(0)))))),l(a(a(a(v(2),v(3)),a(a(a(v(1),l(l(l(a(v(2),l(a(a(v(2),v(0)),v(1)))))))),l(v(0))),l(l(a(v(0),v(1)))))),a(a(a(v(1),l(l(v(1)))),l(v(0))),l(v(0)))))))))
-  where
-    l = Lam
-    a (f, e) = App f e
-    v = Var
+    -- term = exp_mod
+
+    term = App id const
+      where
+        id = Lam $ Var 0
+        const = Lam $ Lam $ Var 1
