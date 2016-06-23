@@ -297,12 +297,14 @@ decodeLam root = do
             Node{..} <- readNode addr
             lift $ modifySTRef nodeDepths $
               IntMap.insertWith (\ _new -> id) nodeID depth
+            trace (unwords ["decode", show addr, show port, show nodeType]) $ return ()
             case nodeType of
                 IDup -> do
-                    let port' = case port of
-                            P0 -> head exit
-                            _ -> P0
-                    go depth (port:exit) =<< readPort addr port'
+                    let (port', exit') = case port of
+                            P0 -> (head exit, tail exit)
+                            _ -> (P0, port:exit)
+                    trace (unwords ["IDup", show port', show exit']) $ return ()
+                    go depth exit' =<< readPort addr port'
                 ILam -> case port of
                     P1 -> do
                         depth' <- lift $ (! nodeID) <$> readSTRef nodeDepths
