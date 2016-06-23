@@ -162,7 +162,11 @@ erase a b = do
 encodeLam :: Lam -> OptLam s NodeAddr
 encodeLam lam = do
     root <- mkNode IRot
-    nextTag <- lift $ newSTRef 0
+    nextTag <- do
+        ref <- lift $ newSTRef 0
+        return $ lift $ do
+            modifySTRef ref succ
+            readSTRef ref
 
     let go scope up (Lam body) = do
             del <- mkNode IEra
@@ -188,9 +192,7 @@ encodeLam lam = do
                     linkHalf lam P1 up
                     return (lam, P1)
                 _ -> do
-                    tag <- lift $ readSTRef nextTag
-                    lift $ modifySTRef nextTag succ
-                    dup <- mkNode $ IDup tag
+                    dup <- mkNode . IDup =<< nextTag
                     linkHalf dup P0 (lam, P1)
                     linkHalf dup P1 up
                     link (dup, P2) =<< readPort lam P1
@@ -202,16 +204,35 @@ encodeLam lam = do
 
 reduceNet :: NodeAddr -> OptLam s NodeAddr
 reduceNet net = do
-    visit <- lift $ newSTRef [(net, P0)]
+    (pushVisit, popVisit) <- do
+        ref <- lift $ newSTRef [(net, P0)]
+        let push next = lift $ modifySTRef ref $ \vs -> (next, P1):(next, P2):vs
+            pop act = do
+                vs <- lift $ readSTRef ref
+                case vs of
+                    [] -> return ()
+                    (addr, port):vs -> do
+                        lift $ writeSTRef ref vs
+                        act addr port
+        return (push, pop)
+
     solid <- lift $ newSTRef mempty
-    exit <- lift $ newSTRef mempty
+
+    (setExitPort, getExitPort) <- do
+        ref <- lift $ newSTRef mempty
+        let set id port = do
+                lift $ modifySTRef ref $ IntMap.insert id port
+            get addr = do
+                id <- nodeID <$> readNode addr
+                lift $ (! id) <$> readSTRef ref
+        return (set, get)
 
     let processNode addr port = do
             (next, nextPort) <- readPort addr port
             processNext next nextPort
         processNext next nextPort = do
-            nextID <- nodeID <$> readNode next
             (prev, prevPort) <- readPort next nextPort
+            nextID <- nodeID <$> readNode next
             nextSolid <- lift $ (nextID `IntSet.member`) <$> readSTRef solid
             unless nextSolid $ case nextPort of
                 P0 -> do
@@ -219,8 +240,7 @@ reduceNet net = do
                     nextTag <- nodeTag <$> readNode next
                     case (prevPort, prevTag, nextTag) of
                         (P0, Just prevTag, Just nextTag) -> do
-                            prevID <- nodeID <$> readNode prev
-                            port <- lift $ (! prevID) <$> readSTRef exit
+                            port <- getExitPort prev
                             (exit, exitPort) <- readPort prev port
                             case nextTag of
                                 TEra -> erase next prev
@@ -230,17 +250,12 @@ reduceNet net = do
                             processNext next nextPort
                         _ -> do
                             lift $ modifySTRef solid $ IntSet.insert nextID
-                            lift $ modifySTRef visit $ \vs -> (next, P1):(next, P2):vs
+                            pushVisit next
                 _ -> do
-                    lift $ modifySTRef exit $ IntMap.insert nextID nextPort
+                    setExitPort nextID nextPort
                     (next, nextPort) <- readPort next P0
                     processNext next nextPort
-    fix $ \loop -> do
-        vs <- lift $ readSTRef visit
-        case vs of
-            [] -> return ()
-            (addr, port):vs -> do
-                lift $ writeSTRef visit vs
+    fix $ \loop -> popVisit $ \addr port -> do
                 processNode addr port
                 loop
     return net
