@@ -3,13 +3,13 @@ module Main where
 import Lam
 import IntNet
 
-main = putStrLn $ runOptLam $ do
+main = putStrLn $ runOptLam 1000000 $ do
     node <- encodeLam term
     node <- reduceNet node
-    -- show . toNat <$> decodeLam node
-    -- decodeLam node
+    show . toNat <$> decodeLam node
+    -- show <$> decodeLam node
     -- showAll node
-    return ""
+    -- return ""
   where
     term = theTerm
 
@@ -19,7 +19,7 @@ exp_mod = l(l(l(a(a(a(v(0),l(l(a(v(1),l(a(a(v(1),l(l(a(v(1),a(a(v(2),v(1)),v(0))
     a (f, e) = App f e
     v = Var
 
-theTerm = app (fromNat 3) [fromNat 2] -- app exp_mod [fromNat 1, fromNat 1, fromNat 31]
+theTerm = app exp_mod [fromNat 100, fromNat 100, fromNat 31]
   where
     app = foldl App
 

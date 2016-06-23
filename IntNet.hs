@@ -263,15 +263,15 @@ decodeLam root = do
                     return $ App f e
     go 0 [] =<< readPort root P0
 
-runOptLam :: (forall s. OptLam s a) -> a
-runOptLam act = runST $ do
-    heap <- newArray_ (0, 10000) -- TODO
+runOptLam :: Int -> (forall s. OptLam s a) -> a
+runOptLam memoryLimit act = runST $ do
+    heap <- newArray_ (0, memoryLimit)
     garbage <- newSTRef []
     nextAddr <- newSTRef 0
     nextID <- newSTRef 1
     runReaderT act R{..}
 
-test = putStrLn $ runOptLam $ do
+test = putStrLn $ runOptLam 100 $ do
     node <- encodeLam term
     node <- reduceNet node
     -- s <- pprNode =<< readNode 0
