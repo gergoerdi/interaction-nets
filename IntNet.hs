@@ -18,12 +18,9 @@ import Data.Function (fix)
 data NodeType = IRot
               | ILam
               | IApp
-              | IDup
+              | IDup Int
               | IEra
-             deriving (Show, Eq, Enum, Bounded)
-
--- data NodeTag = TODOTag
-type NodeTag = Int -- XXX
+             deriving (Show)
 
 data PortNum = P0
              | P1
@@ -33,10 +30,22 @@ data PortNum = P0
 type NodeID = Int -- TODO
 
 data Node s = Node{ nodeType :: !NodeType
-                  , nodeTag :: !NodeTag
                   , nodeID :: !NodeID
-                  , nodePort0, nodePort1, nodePort2 :: Port s
+                  , nodePort0, nodePort1, nodePort2 :: !(Port s)
                   }
+
+data NodeTag = TEra
+             | TLamApp
+             | TDup Int
+             deriving (Show, Eq)
+
+nodeTag :: Node s -> Maybe NodeTag
+nodeTag Node{..} = case nodeType of
+    IRot -> Nothing
+    ILam -> Just TLamApp
+    IApp -> Just TLamApp
+    IDup tag -> Just $ TDup tag
+    IEra -> Just TEra
 
 type Port s = STRef s (NodeAddr, PortNum)
 type NodeAddr = Int
@@ -79,8 +88,8 @@ freshID = do
 mkPort :: OptLam s (Port s)
 mkPort = lift $ newSTRef (0, P0)
 
-mkNode :: NodeType -> NodeTag -> OptLam s NodeAddr
-mkNode nodeType nodeTag = do
+mkNode :: NodeType -> OptLam s NodeAddr
+mkNode nodeType = do
     addr <- alloc
     heap <- asks heap
     nodeID <- freshID
@@ -132,12 +141,8 @@ annihilate a b = do
 
 commute :: NodeAddr -> NodeAddr -> OptLam s ()
 commute a b = do
-    a2 <- do
-        Node{..} <- readNode a
-        mkNode nodeType nodeTag
-    b2 <- do
-        Node{..} <- readNode b
-        mkNode nodeType nodeTag
+    a2 <- mkNode . nodeType =<< readNode a
+    b2 <- mkNode . nodeType =<< readNode b
     link (b, P0) =<< readPort a P1
     link (a, P0) =<< readPort b P1
     link (b, P1) (a, P1)
@@ -149,19 +154,19 @@ commute a b = do
 
 erase :: NodeAddr -> NodeAddr -> OptLam s ()
 erase a b = do
-    e2 <- mkNode IEra (-1)
+    e2 <- mkNode IEra
     link (a, P0) =<< readPort b P1
     link (e2, P0) =<< readPort b P2
     free [b]
 
 encodeLam :: Lam -> OptLam s NodeAddr
 encodeLam lam = do
-    root <- mkNode IRot (-2)
-    nextTag <- lift $ newSTRef 1
+    root <- mkNode IRot
+    nextTag <- lift $ newSTRef 0
 
     let go scope up (Lam body) = do
-            del <- mkNode IEra (-1)
-            lam <- mkNode ILam 0
+            del <- mkNode IEra
+            lam <- mkNode ILam
             linkHalf lam P0 up
             link (lam, P1) (del, P0)
             link (del, P1) (del, P2)
@@ -169,7 +174,7 @@ encodeLam lam = do
             linkHalf lam P2 bod
             return (lam, P0)
         go scope up (App f e) = do
-            app <- mkNode IApp 0
+            app <- mkNode IApp
             linkHalf app P2 up
             linkHalf app P0 =<< go scope (app, P0) f
             linkHalf app P1 =<< go scope (app, P1) e
@@ -185,7 +190,7 @@ encodeLam lam = do
                 _ -> do
                     tag <- lift $ readSTRef nextTag
                     lift $ modifySTRef nextTag succ
-                    dup <- mkNode IDup tag
+                    dup <- mkNode $ IDup tag
                     linkHalf dup P0 (lam, P1)
                     linkHalf dup P1 up
                     link (dup, P2) =<< readPort lam P1
@@ -212,19 +217,20 @@ reduceNet net = do
                 P0 -> do
                     prevTag <- nodeTag <$> readNode prev
                     nextTag <- nodeTag <$> readNode next
-                    if prevPort == P0 && prevTag /= -2 && nextTag /= -2 then do
-                        prevID <- nodeID <$> readNode prev
-                        port <- lift $ (! prevID) <$> readSTRef exit
-                        (exit, exitPort) <- readPort prev port
-                        case nextTag of
-                            -1 -> erase next prev
-                            _ | prevTag == nextTag -> annihilate prev next
-                              | otherwise -> commute prev next
-                        (next, nextPort) <- readPort exit exitPort
-                        processNext next nextPort
-                      else do
-                        lift $ modifySTRef solid $ IntSet.insert nextID
-                        lift $ modifySTRef visit $ \vs -> (next, P1):(next, P2):vs
+                    case (prevPort, prevTag, nextTag) of
+                        (P0, Just prevTag, Just nextTag) -> do
+                            prevID <- nodeID <$> readNode prev
+                            port <- lift $ (! prevID) <$> readSTRef exit
+                            (exit, exitPort) <- readPort prev port
+                            case nextTag of
+                                TEra -> erase next prev
+                                _ | prevTag == nextTag -> annihilate prev next
+                                  | otherwise -> commute prev next
+                            (next, nextPort) <- readPort exit exitPort
+                            processNext next nextPort
+                        _ -> do
+                            lift $ modifySTRef solid $ IntSet.insert nextID
+                            lift $ modifySTRef visit $ \vs -> (next, P1):(next, P2):vs
                 _ -> do
                     lift $ modifySTRef exit $ IntMap.insert nextID nextPort
                     (next, nextPort) <- readPort next P0
@@ -247,7 +253,7 @@ decodeLam root = do
             lift $ modifySTRef nodeDepths $
               IntMap.insertWith (\ _new -> id) nodeID depth
             case nodeType of
-                IDup -> do
+                IDup _ -> do
                     let (port', exit') = case port of
                             P0 -> (head exit, tail exit)
                             _ -> (P0, port:exit)
