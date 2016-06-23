@@ -4,7 +4,6 @@ module IntNet where
 import Lam
 import Data.STRef
 import Control.Monad.ST
-import Data.Array.ST
 import Control.Monad.Reader
 import Control.Monad.Trans
 import Control.Monad ((<=<), unless)
@@ -47,36 +46,13 @@ nodeTag Node{..} = case nodeType of
     IDup tag -> Just $ TDup tag
     IEra -> Just TEra
 
-type Port s = STRef s (NodeAddr, PortNum)
-type NodeAddr = Int
+type Port s = STRef s (Node s, PortNum)
 
-type Heap s = STArray s NodeAddr (Node s)
-data R s = R{ heap :: Heap s
-            , garbage :: STRef s [NodeAddr]
-            , nextAddr :: STRef s NodeAddr
+data R s = R{ root :: Node s
             , nextID :: STRef s NodeID
             }
 
 type OptLam s = ReaderT (R s) (ST s)
-
-alloc :: OptLam s NodeAddr
-alloc = do
-    gref <- asks garbage
-    garbage <- lift $ readSTRef gref
-    case garbage of
-        addr:garbage -> do
-            lift $ writeSTRef gref garbage
-            return addr
-        [] -> do
-            aref <- asks nextAddr
-            addr <- lift $ readSTRef aref
-            lift $ writeSTRef aref (succ addr)
-            return addr
-
-free :: [NodeAddr] -> OptLam s ()
-free addrs = do
-    gref <- asks garbage
-    lift $ modifySTRef gref (addrs ++)
 
 freshID :: OptLam s NodeID
 freshID = do
@@ -85,51 +61,37 @@ freshID = do
     lift $ writeSTRef ref (succ id)
     return id
 
-mkPort :: OptLam s (Port s)
-mkPort = lift $ newSTRef (0, P0)
-
-mkNode :: NodeType -> OptLam s NodeAddr
+mkNode :: NodeType -> OptLam s (Node s)
 mkNode nodeType = do
-    addr <- alloc
-    heap <- asks heap
     nodeID <- freshID
-    nodePort0 <- mkPort
-    nodePort1 <- mkPort
-    nodePort2 <- mkPort
-    let node = Node{..}
-    lift $ writeArray heap addr node
-    return addr
+    root <- asks root
+    lift $ mkNode_ nodeType nodeID root
 
-readNode :: NodeAddr -> OptLam s (Node s)
-readNode addr = do
-    heap <- asks heap
-    lift $ readArray heap addr
+mkNode_ :: NodeType -> Int -> Node s -> ST s (Node s)
+mkNode_ nodeType nodeID root = do
+    nodePort0 <- newSTRef (root, P0)
+    nodePort1 <- newSTRef (root, P0)
+    nodePort2 <- newSTRef (root, P0)
+    return Node{..}
 
-getPort :: NodeAddr -> PortNum -> OptLam s (Port s)
-getPort addr pnum = do
-    Node{..} <- readNode addr
-    return $ case pnum of
-        P0 -> nodePort0
-        P1 -> nodePort1
-        P2 -> nodePort2
+getPort :: Node s -> PortNum -> Port s
+getPort Node{..} pnum = case pnum of
+    P0 -> nodePort0
+    P1 -> nodePort1
+    P2 -> nodePort2
 
-readPort :: NodeAddr -> PortNum -> OptLam s (NodeAddr, PortNum)
-readPort addr pnum = lift . readSTRef =<< getPort addr pnum
+readPort :: Node s -> PortNum -> OptLam s (Node s, PortNum)
+readPort node pnum = lift . readSTRef $ getPort node pnum
 
-readID :: NodeAddr -> OptLam s NodeID
-readID addr = nodeID <$> readNode addr
+linkHalf :: Node s -> PortNum -> (Node s, PortNum) -> OptLam s ()
+linkHalf node pnum to = lift $ writeSTRef (getPort node pnum) to
 
-linkHalf :: NodeAddr -> PortNum -> (NodeAddr, PortNum) -> OptLam s ()
-linkHalf addr pnum to = do
-    from <- getPort addr pnum
-    lift $ writeSTRef from to
-
-link :: (NodeAddr, PortNum) -> (NodeAddr, PortNum) -> OptLam s ()
+link :: (Node s, PortNum) -> (Node s, PortNum) -> OptLam s ()
 link a b = do
     uncurry linkHalf a b
     uncurry linkHalf b a
 
-annihilate :: NodeAddr -> NodeAddr -> OptLam s ()
+annihilate :: Node s -> Node s -> OptLam s ()
 annihilate a b = do
     a1 <- readPort a P1
     b1 <- readPort b P1
@@ -137,12 +99,11 @@ annihilate a b = do
     a2 <- readPort a P2
     b2 <- readPort b P2
     link a2 b2
-    free [b, a]
 
-commute :: NodeAddr -> NodeAddr -> OptLam s ()
+commute :: Node s -> Node s -> OptLam s ()
 commute a b = do
-    a2 <- mkNode . nodeType =<< readNode a
-    b2 <- mkNode . nodeType =<< readNode b
+    a2 <- mkNode $ nodeType a
+    b2 <- mkNode $ nodeType b
     link (b, P0) =<< readPort a P1
     link (a, P0) =<< readPort b P1
     link (b, P1) (a, P1)
@@ -152,16 +113,16 @@ commute a b = do
     link (b, P2) (a2, P1)
     link (b2, P2) (a2, P2)
 
-erase :: NodeAddr -> NodeAddr -> OptLam s ()
+erase :: Node s -> Node s -> OptLam s ()
 erase a b = do
     e2 <- mkNode IEra
     link (a, P0) =<< readPort b P1
     link (e2, P0) =<< readPort b P2
-    free [b]
 
-encodeLam :: Lam -> OptLam s NodeAddr
+encodeLam :: Lam -> OptLam s (Node s)
 encodeLam lam = do
-    root <- mkNode IRot
+    root <- asks root
+
     nextTag <- do
         ref <- lift $ newSTRef 0
         return $ lift $ do
@@ -186,8 +147,7 @@ encodeLam lam = do
         go scope up (Var v) = do
             let lam = scope !! v
             (target, targetPort) <- readPort lam P1
-            targetType <- nodeType <$> readNode target
-            case targetType of
+            case nodeType target of
                 IEra -> do
                     linkHalf lam P1 up
                     return (lam, P1)
@@ -202,7 +162,7 @@ encodeLam lam = do
     linkHalf root P0 enc
     return root
 
-reduceNet :: NodeAddr -> OptLam s NodeAddr
+reduceNet :: Node s -> OptLam s ()
 reduceNet net = do
     (pushVisit, popVisit) <- do
         ref <- lift $ newSTRef [(net, P0)]
@@ -222,8 +182,8 @@ reduceNet net = do
         ref <- lift $ newSTRef mempty
         let set id port = do
                 lift $ modifySTRef ref $ IntMap.insert id port
-            get addr = do
-                id <- nodeID <$> readNode addr
+            get node = do
+                let id = nodeID node
                 lift $ (! id) <$> readSTRef ref
         return (set, get)
 
@@ -232,13 +192,11 @@ reduceNet net = do
             processNext next nextPort
         processNext next nextPort = do
             (prev, prevPort) <- readPort next nextPort
-            nextID <- nodeID <$> readNode next
+            let nextID = nodeID next
             nextSolid <- lift $ (nextID `IntSet.member`) <$> readSTRef solid
             unless nextSolid $ case nextPort of
                 P0 -> do
-                    prevTag <- nodeTag <$> readNode prev
-                    nextTag <- nodeTag <$> readNode next
-                    case (prevPort, prevTag, nextTag) of
+                    case (prevPort, nodeTag prev, nodeTag next) of
                         (P0, Just prevTag, Just nextTag) -> do
                             port <- getExitPort prev
                             (exit, exitPort) <- readPort prev port
@@ -258,13 +216,12 @@ reduceNet net = do
     fix $ \loop -> popVisit $ \addr port -> do
                 processNode addr port
                 loop
-    return net
+    return ()
 
-decodeLam :: NodeAddr -> OptLam s Lam
+decodeLam :: Node s -> OptLam s Lam
 decodeLam root = do
     nodeDepths <- lift $ newSTRef mempty
-    let go depth exit (addr, port) = do
-            Node{..} <- readNode addr
+    let go depth exit (node@Node{..}, port) = do
             lift $ modifySTRef nodeDepths $
               IntMap.insertWith (\ _new -> id) nodeID depth
             case nodeType of
@@ -272,29 +229,27 @@ decodeLam root = do
                     let (port', exit') = case port of
                             P0 -> (head exit, tail exit)
                             _ -> (P0, port:exit)
-                    go depth exit' =<< readPort addr port'
+                    go depth exit' =<< readPort node port'
                 ILam -> case port of
                     P1 -> do
                         depth' <- lift $ (! nodeID) <$> readSTRef nodeDepths
                         return $ Var (depth - depth' - 1)
-                    _ -> Lam <$> (go (succ depth) exit =<< readPort addr P2)
+                    _ -> Lam <$> (go (succ depth) exit =<< readPort node P2)
                 IApp -> do
-                    f <- go depth exit =<< readPort addr P0
-                    e <- go depth exit =<< readPort addr P1
+                    f <- go depth exit =<< readPort node P0
+                    e <- go depth exit =<< readPort node P1
                     return $ App f e
     go 0 [] =<< readPort root P0
 
-runOptLam :: Int -> (forall s. OptLam s a) -> a
-runOptLam memoryLimit act = runST $ do
-    heap <- newArray_ (0, memoryLimit)
-    garbage <- newSTRef []
-    nextAddr <- newSTRef 0
+runOptLam :: (forall s. OptLam s a) -> a
+runOptLam act = runST $ do
     nextID <- newSTRef 1
+    root <- mfix $ mkNode_ IRot 0
     runReaderT act R{..}
 
-test = putStrLn $ runOptLam 100 $ do
+test = putStrLn $ runOptLam $ do
     node <- encodeLam term
-    node <- reduceNet node
+    reduceNet node
     -- s <- pprNode =<< readNode 0
     -- return s
     show <$> decodeLam node

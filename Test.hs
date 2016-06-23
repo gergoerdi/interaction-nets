@@ -3,9 +3,9 @@ module Main where
 import Lam
 import IntNet
 
-main = putStrLn $ runOptLam 1000000 $ do
+main = putStrLn $ runOptLam $ do
     node <- encodeLam term
-    node <- reduceNet node
+    reduceNet node
     show . toNat <$> decodeLam node
     -- show <$> decodeLam node
     -- showAll node
