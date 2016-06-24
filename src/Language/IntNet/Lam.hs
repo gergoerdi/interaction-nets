@@ -1,7 +1,7 @@
-module IntNetLam where
+module Language.IntNet.Lam where
 
-import IntNet
-import Lam
+import Language.IntNet
+import Language.Lam
 import Data.STRef
 import Control.Monad.Reader
 import Control.Monad.Trans

@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards, Rank2Types #-}
-module IntNet where
+module Language.IntNet where
 
 import Data.STRef
 import Control.Monad.ST

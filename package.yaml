@@ -1,0 +1,22 @@
+name: interaction-nets
+version: 0.0.1
+category: Languages
+
+dependencies:
+  - base
+  - transformers
+  - mtl
+  - containers
+
+source-dirs:
+  - src
+  
+library:
+  exposed-modules:
+    - Language.IntNet
+    - Language.Lam
+    - Language.IntNet.Lam
+  
+# executables:
+#   symbol-index:
+#     main: SymbolIndex.hs
