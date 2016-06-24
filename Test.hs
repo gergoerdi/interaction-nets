@@ -1,7 +1,7 @@
 module Main where
 
 import Lam
-import IntNet
+import IntNetLam
 
 main = putStrLn $ show . toNat $ optLam term
   where
