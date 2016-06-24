@@ -3,13 +3,7 @@ module Main where
 import Lam
 import IntNet
 
-main = putStrLn $ runOptLam $ do
-    node <- encodeLam term
-    reduceNet node
-    show . toNat <$> decodeLam node
-    -- show <$> decodeLam node
-    -- showAll node
-    -- return ""
+main = putStrLn $ show . toNat $ optLam term
   where
     term = theTerm
 
