@@ -1,9 +1,17 @@
-module Main where
+module Main (main) where
 
-import Lam
-import IntNetLam
+import Language.Lam
+import Language.IntNet.Lam
+import Test.Hspec
 
-main = putStrLn $ show . toNat $ optLam term
+main :: IO ()
+main = hspec spec
+
+spec :: Spec
+spec = do
+    describe "optLam" $ do
+      it "reduces 100^100 mod 31 to 25" $ do
+          toNat (optLam term) `shouldBe` 25
   where
     term = theTerm
 

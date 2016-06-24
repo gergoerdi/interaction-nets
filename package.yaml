@@ -16,7 +16,13 @@ library:
     - Language.IntNet
     - Language.Lam
     - Language.IntNet.Lam
-  
-# executables:
-#   symbol-index:
-#     main: SymbolIndex.hs
+
+tests:
+  spec:
+    source-dirs:
+      - test
+
+    dependencies:
+      - hspec == 2.*
+
+    main: Test.hs
