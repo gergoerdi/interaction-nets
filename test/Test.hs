@@ -35,9 +35,9 @@ fromNat  = Lam . Lam . go
     succ = App (Var 1)
 
 toNat :: Lam -> Integer
-toNat = subtract 1 . size
-
-size :: Lam -> Integer
-size (Var _) = 1
-size (Lam lam) = size lam
-size (App f e) = size f + size e
+toNat (Lam (Lam e)) = go e
+  where
+    go (App (Var 1) e) = succ $ go e
+    go (Var 0) = 0
+    go _ = error "Not a Nat in normal form"
+toNat _ = error "Not a Nat in normal form"
