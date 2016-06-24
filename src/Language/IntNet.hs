@@ -187,5 +187,5 @@ reduce net = do
 run :: (forall s. IntNet s a) -> a
 run act = runST $ do
     nextID <- newSTRef 1
-    root <- mkRoot
+    let root = error "Root node not set"
     runReaderT act R{..}

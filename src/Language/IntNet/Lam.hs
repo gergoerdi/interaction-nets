@@ -46,11 +46,10 @@ encodeLam lam = do
                     linkHalf lam P1 (dup, P0)
                     return (dup, P1)
 
-    withNewRoot $ do
-        root <- asks root
-        enc <- go [] (root, P0) lam
-        linkHalf root P0 enc
-        return root
+    root <- asks root
+    enc <- go [] (root, P0) lam
+    linkHalf root P0 enc
+    return root
 
 decodeLam :: Node s -> IntNet s Lam
 decodeLam root = do
@@ -81,7 +80,7 @@ decodeLam root = do
     go 0 [] =<< readPort root P0
 
 optLam :: Lam -> Lam
-optLam term = IntNet.run $ do
+optLam term = IntNet.run $ withNewRoot $ do
     node <- encodeLam term
     IntNet.reduce node
     decodeLam node
