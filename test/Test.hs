@@ -28,8 +28,11 @@ theTerm = app exp_mod [fromNat 100, fromNat 100, fromNat 31]
 fromNat :: Integer -> Lam
 fromNat  = Lam . Lam . go
   where
-    go 0 = Var 0
-    go n = App (Var 1) $ go (n-1)
+    go 0 = zero
+    go n = succ $ go (n-1)
+
+    zero = Var 0
+    succ = App (Var 1)
 
 toNat :: Lam -> Integer
 toNat = subtract 1 . size
