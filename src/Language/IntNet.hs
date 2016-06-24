@@ -1,5 +1,11 @@
 {-# LANGUAGE RecordWildCards, Rank2Types #-}
-module Language.IntNet where
+module Language.IntNet
+       ( NodeType(..), PortNum(..), NodeID, Node(..)
+       , IntNet
+       , mkNode, withNewRoot, root
+       , link, linkHalf, readPort
+       , reduce, run
+       ) where
 
 import Data.STRef
 import Control.Monad.ST
@@ -117,8 +123,8 @@ erase a b = do
     link (a, P0) =<< readPort b P1
     link (e2, P0) =<< readPort b P2
 
-reduceNet :: Node s -> IntNet s ()
-reduceNet net = do
+reduce :: Node s -> IntNet s ()
+reduce net = do
     (pushVisit, popVisit) <- do
         ref <- lift $ newSTRef [(net, P0)]
         let push next = lift $ modifySTRef ref $ \vs -> (next, P1):(next, P2):vs
@@ -178,8 +184,8 @@ reduceNet net = do
                 loop
             Nothing -> return ()
 
-runIntNet :: (forall s. IntNet s a) -> a
-runIntNet act = runST $ do
+run :: (forall s. IntNet s a) -> a
+run act = runST $ do
     nextID <- newSTRef 1
     root <- mkRoot
     runReaderT act R{..}

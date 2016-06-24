@@ -1,6 +1,6 @@
 module Language.IntNet.Lam where
 
-import Language.IntNet
+import Language.IntNet as IntNet
 import Language.Lam
 import Data.STRef
 import Control.Monad.Reader
@@ -81,7 +81,7 @@ decodeLam root = do
     go 0 [] =<< readPort root P0
 
 optLam :: Lam -> Lam
-optLam term = runIntNet $ do
+optLam term = IntNet.run $ do
     node <- encodeLam term
-    reduceNet node
+    IntNet.reduce node
     decodeLam node
